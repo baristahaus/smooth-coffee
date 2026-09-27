@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Smooth Coffee</title>
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<canvas id="field" aria-hidden="true"></canvas>
+
+<div id="gate" data-state="loading">
+  <div class="gate-card">
+    <h1>Smooth Coffee</h1>
+    <p class="sub">system audio in &rarr; mood, colour and motion out</p>
+    <button id="start" type="button" autofocus>Start capturing</button>
+    <p id="gate-message">Brave will ask for microphone access once; the captured stream is never played back.</p>
+    <p class="keys">F fullscreen &middot; H readout &middot; P device picker &middot; [ ] brightness ceiling &middot; 1&ndash;9 lock mood &middot; 0 unlock &middot; R reset</p>
+  </div>
+</div>
+
+<div id="picker" class="hidden" role="dialog" aria-label="Audio input device">
+  <h2>Audio input</h2>
+  <div id="device-list"></div>
+  <p class="hint">press P again to close</p>
+</div>
+
+<div id="hud" class="bottom-left" data-warning="false">
+  <div class="row"><span data-field="status"></span><span class="dot">&middot;</span><span data-field="device"></span></div>
+  <div class="row mood"><span data-field="mood"></span><span class="dot">&middot;</span><span data-field="bpm"></span><span class="dot">&middot;</span><span data-field="key"></span></div>
+  <div class="bars">
+    <label>valence<i data-field="bar-valence" data-bar="true"></i><b data-field="valence"></b></label>
+    <label>arousal<i data-field="bar-arousal" data-bar="true"></i><b data-field="arousal"></b></label>
+    <label>level<i data-field="bar-loudness" data-bar="true"></i><b></b></label>
+  </div>
+  <div class="row meta"><span data-field="fps"></span> fps<span class="dot">&middot;</span><span data-field="scale"></span><span class="dot">&middot;</span>lift <span data-field="lift"></span></div>
+  <div class="row warn" data-field="warning"></div>
+</div>
+
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

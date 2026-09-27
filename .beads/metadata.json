@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "macos_audio",
+  "project_id": "280cb0cd-7b3a-400e-b63a-504c106eeae4"
+}

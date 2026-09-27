@@ -1,0 +1,178 @@
+:root {
+  --ink: rgba(214, 220, 228, 0.62);
+  --ink-dim: rgba(214, 220, 228, 0.34);
+  --ink-warn: rgba(236, 168, 120, 0.8);
+  --track: rgba(214, 220, 228, 0.14);
+  --pad: 3.2vmin;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: #000;
+  overflow: hidden;
+  font: 500 12px/1.55 ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: 0.02em;
+}
+
+#field {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #000;
+}
+
+/* The readout is the only static geometry on screen, so it fades itself away and
+   hides the cursor with it. */
+body:has(#hud.fading),
+body:has(#gate.hidden) { cursor: none; }
+
+#hud {
+  position: fixed;
+  max-width: 42ch;
+  padding: var(--pad);
+  color: var(--ink);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+  opacity: 1;
+  transition: opacity 1.4s ease;
+  pointer-events: none;
+}
+
+#hud.fading { opacity: 0; }
+#hud.off { display: none; }
+#hud.top-left { top: 0; left: 0; }
+#hud.top-right { top: 0; right: 0; text-align: right; }
+#hud.bottom-right { right: 0; bottom: 0; text-align: right; }
+#hud.bottom-left { left: 0; bottom: 0; }
+
+#hud .row { white-space: nowrap; }
+#hud .dot { margin: 0 0.6ch; color: var(--ink-dim); }
+#hud .mood { font-size: 15px; color: rgba(226, 231, 238, 0.78); }
+#hud .meta { font-size: 11px; color: var(--ink-dim); }
+#hud .warn { color: var(--ink-warn); white-space: normal; }
+#hud[data-warning="false"] .warn { display: none; }
+
+#hud .bars {
+  display: grid;
+  gap: 3px;
+  margin: 10px 0 8px;
+  font-size: 11px;
+  color: var(--ink-dim);
+}
+
+#hud .bars label {
+  display: grid;
+  grid-template-columns: 8ch 1fr 4ch;
+  align-items: center;
+  gap: 1ch;
+}
+
+#hud.top-right .bars label,
+#hud.bottom-right .bars label { grid-template-columns: 4ch 1fr 8ch; }
+
+#hud .bars i {
+  display: block;
+  height: 2px;
+  background: var(--track);
+  position: relative;
+}
+
+#hud .bars i::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: calc(var(--fill, 0) * 100%);
+  background: rgba(214, 220, 228, 0.55);
+  transition: width 0.4s linear;
+}
+
+#hud b { font-weight: 500; color: var(--ink); }
+
+/* Start gate. Visible only until the first successful capture. */
+#gate {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(120% 90% at 50% 45%, rgba(12, 14, 22, 0.72), rgba(0, 0, 0, 0.92));
+  color: var(--ink);
+  transition: opacity 0.9s ease, visibility 0.9s;
+}
+
+#gate.hidden { opacity: 0; visibility: hidden; }
+
+.gate-card {
+  text-align: center;
+  max-width: 46ch;
+  animation: gate-drift 60s ease-in-out infinite alternate;
+}
+
+@keyframes gate-drift {
+  from { transform: translate3d(-2.2vmin, 1.4vmin, 0); }
+  to { transform: translate3d(2.4vmin, -1.8vmin, 0); }
+}
+
+.gate-card h1 {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(226, 231, 238, 0.8);
+}
+
+.gate-card .sub { margin: 0.4em 0 2em; color: var(--ink-dim); }
+.gate-card .keys { margin-top: 2.4em; font-size: 11px; color: var(--ink-dim); }
+#gate[data-state="failed"] #gate-message { color: var(--ink-warn); }
+
+#start {
+  font: inherit;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(232, 236, 242, 0.9);
+  background: rgba(214, 220, 228, 0.08);
+  border: 1px solid rgba(214, 220, 228, 0.24);
+  padding: 0.8em 2.2em;
+  cursor: pointer;
+}
+
+#start:hover { background: rgba(214, 220, 228, 0.16); }
+
+#picker {
+  position: fixed;
+  top: var(--pad);
+  left: var(--pad);
+  max-height: 80vh;
+  overflow: auto;
+  padding: 1.2em 1.4em;
+  background: rgba(6, 7, 12, 0.86);
+  border: 1px solid rgba(214, 220, 228, 0.16);
+  color: var(--ink);
+}
+
+#picker.hidden { display: none; }
+#picker h2 { margin: 0 0 0.8em; font-size: 12px; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-dim); }
+#picker button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  border-left: 2px solid transparent;
+  padding: 0.35em 0.7em;
+  cursor: pointer;
+}
+#picker button:hover { background: rgba(214, 220, 228, 0.1); }
+#picker button[data-current="true"] { border-left-color: rgba(226, 231, 238, 0.6); color: rgba(232, 236, 242, 0.92); }
+#picker .hint { font-size: 11px; color: var(--ink-dim); }
+
+@media (prefers-contrast: less) {
+  :root { --ink: rgba(200, 205, 212, 0.5); }
+}
