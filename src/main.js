@@ -1,15 +1,21 @@
-import { Renderer } from './renderer.js';
+import { Stage } from './stage.js';
+import { fieldScene } from './scenes/field.js';
+import { smokeRoomScene } from './scenes/smokeRoom.js';
+import { createChoreography, stepChoreography } from './choreography.js';
 import { AudioFeatureTracker, follow } from './features.js';
 import { MoodFollower } from './mood.js';
 import { Hud } from './hud.js';
 import { MOOD_ANCHORS } from './palettes.js';
-import { unlockDeviceLabels, listInputs, chooseInput, openInput } from './capture.js';
+import { unlockDeviceLabels, listInputs, chooseInput, openInput, LOOPBACK_PATTERN } from './capture.js';
 
 const PREFERENCES_KEY = 'smooth-coffee.v1';
 // 8192 for a reason: at 48 kHz that is 5.86 Hz per bin, which resolves semitones
 // up to ~1 kHz and therefore makes the major/minor chroma estimate meaningful.
 const FFT_SIZE = 8192;
 const TAU = Math.PI * 2;
+
+/** Cycled by the S key. Every scene consumes the same frame state. */
+const VISUALS = [fieldScene, smokeRoomScene];
 
 // Burn-in defence: nothing in the composition is allowed to hold still. These
 // periods are mutually prime-ish so the combined pattern never repeats within a
@@ -22,7 +28,7 @@ const DRIFT = {
   glowYSeconds: 167,
 };
 
-// What the field looks like before any audio has been seen: dim, slow, still drifting.
+// What the room looks like before any audio has been seen: dim, slow, still drifting.
 const IDLE_MOTION = { flow: 0.04, turbulence: 0.35, contrast: 0.85, pulseGain: 0.1, glow: 0.4, grain: 0.012 };
 
 const QUALITY_STEPS = [1, 0.85, 0.7, 0.55, 0.45];
@@ -34,6 +40,7 @@ const saturate = (share, gain) => {
   const x = Math.max(0, share) * gain;
   return Math.min(1, (1.25 * x) / (1 + x));
 };
+
 const SILENCE = {
   silent: true, rms: 0, db: -120, flux: 0, bpm: 0, bpmConfidence: 0, pulse: 0,
   centroidHz: 0, bass: 0, lowMid: 0, mid: 0, upper: 0, air: 0, brightness: 0,
@@ -53,19 +60,26 @@ export class SmoothCoffee {
   constructor(elements) {
     this.el = elements;
     this.prefs = load();
-    this.renderer = new Renderer(elements.canvas);
+    this.stage = new Stage(elements.canvas);
     this.tracker = new AudioFeatureTracker({ sampleRate: 48000, fftSize: FFT_SIZE });
     this.follower = new MoodFollower();
     this.hud = new Hud(elements.hud);
-    this.renderer.renderScale = QUALITY_STEPS.includes(this.prefs.scale) ? this.prefs.scale : 1;
-    this.renderer.resize();
+    this.room = createChoreography();
+
+    this.stage.renderScale = QUALITY_STEPS.includes(this.prefs.scale) ? this.prefs.scale : 1;
+    this.visual = VISUALS.find((entry) => entry.id === this.prefs.visual) ?? VISUALS[0];
+    this.stage.setScene(this.visual);
+
     this.capture = null;
     this.device = null;
     this.status = 'idle';
     this.warning = null;
     this.lockedMood = -1;
-    this.quality = { scale: this.renderer.renderScale, frameTimes: [], checkedAt: 0 };
-    this.scene = {
+    this.quality = { scale: this.stage.renderScale, frameTimes: [], checkedAt: 0 };
+
+    // The scene contract: one object, assembled every frame, consumed by whichever
+    // visual is active. Scenes never read features or mood directly.
+    this.frame = {
       clock: 0,
       sceneTime: 0,
       drift: { x: 0, y: 0 },
@@ -82,7 +96,9 @@ export class SmoothCoffee {
       bands: { bass: 0, mid: 0, air: 0 },
       pulse: 0,
       colors: [[0.04, 0.05, 0.09], [0.16, 0.16, 0.26], [0.4, 0.42, 0.5]],
+      room: this.room,
     };
+
     this.startedAt = performance.now();
     this.lastFrameAt = this.startedAt;
     this.lastHudAt = 0;
@@ -97,8 +113,9 @@ export class SmoothCoffee {
     localStorage.setItem(PREFERENCES_KEY, JSON.stringify({
       deviceId: this.device?.deviceId ?? null,
       label: this.device?.label ?? null,
-      lift: this.scene.lift,
+      lift: this.frame.lift,
       scale: this.quality.scale,
+      visual: this.visual.id,
     }));
   }
 
@@ -139,11 +156,14 @@ export class SmoothCoffee {
     this.follower.reset(performance.now());
     this.tracker.setSampleRate(this.capture.context.sampleRate);
     this.status = 'capturing';
-    this.warning = !/blackhole|eqmac|loopback|virtual|aggregate/i.test(device.label)
-      ? `using "${device.label}" — not a loopback driver, expecting a microphone`
-      : null;
+    this.warning = LOOPBACK_PATTERN.test(device.label)
+      ? null
+      : `using "${device.label}" — not a loopback driver, expecting a microphone`;
     this.capture.track.addEventListener('ended', () => this.onCaptureLost());
-    this.capture.track.addEventListener('mute', () => { this.warning = `track muted by the OS`; this.hud.noteActivity(); });
+    this.capture.track.addEventListener('mute', () => {
+      this.warning = 'track muted by the operating system';
+      this.hud.noteActivity();
+    });
     this.savePreferences();
   }
 
@@ -155,7 +175,7 @@ export class SmoothCoffee {
   }
 
   attachListeners() {
-    addEventListener('resize', () => this.renderer.resize());
+    addEventListener('resize', () => this.stage.resize());
     addEventListener('devicechange', async () => {
       if (!this.capture) return;
       const inputs = await listInputs();
@@ -177,6 +197,15 @@ export class SmoothCoffee {
     addEventListener('pointerdown', () => this.hud.noteActivity());
   }
 
+  /** S walks the visuals; both consume the identical frame state. */
+  cycleVisual() {
+    const index = VISUALS.indexOf(this.visual);
+    this.visual = VISUALS[(index + 1) % VISUALS.length];
+    this.stage.setScene(this.visual);
+    this.savePreferences();
+    return this.visual;
+  }
+
   handleKey(event) {
     this.hud.noteActivity();
     const key = event.key.toLowerCase();
@@ -189,11 +218,14 @@ export class SmoothCoffee {
     } else if (key === 'p') {
       this.el.picker.classList.toggle('hidden');
       void this.refreshInputs().then(() => this.fillDeviceList());
+    } else if (key === 's') {
+      this.cycleVisual();
     } else if (key === 'r') {
       this.tracker.reset();
       this.follower.reset(performance.now());
     } else if (key === '[' || key === ']') {
-      this.scene.lift = Math.min(0.95, Math.max(0.22, this.scene.lift + (key === ']' ? 0.05 : -0.05)));
+      const step = key === ']' ? 0.05 : -0.05;
+      this.frame.lift = Math.min(0.95, Math.max(0.22, this.frame.lift + step));
       this.savePreferences();
     } else if (key === '0') {
       this.lockedMood = -1;
@@ -229,33 +261,44 @@ export class SmoothCoffee {
     return this.cachedInputs;
   }
 
-  buildScene(dt) {
-    const { scene, features, mood } = this;
+  /** Assemble the frame state: mood into motion, colour and room choreography. */
+  buildFrame(dt) {
+    const { frame, features, mood } = this;
     const clock = (performance.now() - this.startedAt) / 1000;
     const idle = mood.idle;
     const motion = mood.motion;
 
-    scene.clock = clock;
-    scene.sceneTime += dt * (0.22 + motion.flow * 2.6) * (1 - 0.75 * idle);
-    scene.drift.x = Math.sin((TAU * clock) / DRIFT.panSeconds);
-    scene.drift.y = Math.sin((TAU * clock) / DRIFT.tiltSeconds + 1.7);
-    scene.glow.x = 0.26 * Math.sin((TAU * clock) / DRIFT.glowXSeconds);
-    scene.glow.y = 0.18 * Math.sin((TAU * clock) / DRIFT.glowYSeconds + 0.9);
-    scene.breath = 1 + 0.045 * Math.sin((TAU * clock) / DRIFT.breathSeconds);
-    scene.idle = idle;
-    scene.grain = motion.grain;
-    scene.contrast = motion.contrast;
-    scene.flow = motion.flow;
-    scene.turbulence = motion.turbulence * (1 - 0.4 * idle);
-    scene.pulseGain = motion.pulseGain;
-    scene.glowGain = motion.glow * (1 - 0.55 * idle);
+    frame.clock = clock;
+    frame.sceneTime += dt * (0.22 + motion.flow * 2.6) * (1 - 0.75 * idle);
+    frame.drift.x = Math.sin((TAU * clock) / DRIFT.panSeconds);
+    frame.drift.y = Math.sin((TAU * clock) / DRIFT.tiltSeconds + 1.7);
+    frame.glow.x = 0.26 * Math.sin((TAU * clock) / DRIFT.glowXSeconds);
+    frame.glow.y = 0.18 * Math.sin((TAU * clock) / DRIFT.glowYSeconds + 0.9);
+    frame.breath = 1 + 0.045 * Math.sin((TAU * clock) / DRIFT.breathSeconds);
+    frame.idle = idle;
+    frame.grain = motion.grain;
+    frame.contrast = motion.contrast;
+    frame.flow = motion.flow;
+    frame.turbulence = motion.turbulence * (1 - 0.4 * idle);
+    frame.pulseGain = motion.pulseGain;
+    frame.glowGain = motion.glow * (1 - 0.55 * idle);
 
-    scene.bands.bass = follow(scene.bands.bass, saturate(features.bass, 3.2), dt, 0.05, 0.3);
-    scene.bands.mid = follow(scene.bands.mid, saturate(features.mid + features.lowMid, 2.6), dt, 0.07, 0.35);
-    scene.bands.air = follow(scene.bands.air, saturate(features.air, 6.5), dt, 0.04, 0.25);
-    scene.pulse = follow(scene.pulse, features.pulse * (1 - idle), dt, 0.015, 0.2);
-    scene.colors = mood.colors ?? scene.colors;
-    return scene;
+    frame.bands.bass = follow(frame.bands.bass, saturate(features.bass, 3.2), dt, 0.05, 0.3);
+    frame.bands.mid = follow(frame.bands.mid, saturate(features.mid + features.lowMid, 2.6), dt, 0.07, 0.35);
+    frame.bands.air = follow(frame.bands.air, saturate(features.air, 6.5), dt, 0.04, 0.25);
+    frame.pulse = follow(frame.pulse, features.pulse * (1 - idle), dt, 0.015, 0.2);
+    frame.colors = mood.colors ?? frame.colors;
+
+    stepChoreography(this.room, dt, {
+      clock,
+      bpm: mood.bpm,
+      bpmConfidence: mood.bpmConfidence,
+      arousal: mood.arousal,
+      idle,
+      pulse: frame.pulse,
+      bass: frame.bands.bass,
+    });
+    return frame;
   }
 
   /** Frame pacing is measured every frame; the HUD and the scale choice read it. */
@@ -275,16 +318,17 @@ export class SmoothCoffee {
     const index = QUALITY_STEPS.indexOf(state.scale);
     if (meanMs > 22 && index < QUALITY_STEPS.length - 1) {
       state.scale = QUALITY_STEPS[index + 1];
-      this.renderer.setRenderScale(state.scale);
+      this.stage.setRenderScale(state.scale);
       this.savePreferences();
     } else if (meanMs < 12 && index > 0) {
       state.scale = QUALITY_STEPS[Math.max(0, index - 1)];
-      this.renderer.setRenderScale(state.scale);
+      this.stage.setRenderScale(state.scale);
       this.savePreferences();
     }
   }
 
-  frame(now) {
+  /** One animation frame: analyse, assess, choreograph, draw. Not the same thing as the frame *state*. */
+  tick(now) {
     this.scheduleFrame();
     const dt = Math.min(0.1, (now - this.lastFrameAt) / 1000);
     this.lastFrameAt = now;
@@ -300,22 +344,19 @@ export class SmoothCoffee {
 
     if (this.lockedMood >= 0) {
       const anchor = MOOD_ANCHORS[this.lockedMood];
-      this.follower.valence += (anchor.valence - this.follower.valence) * (1 - Math.exp(-dt / 0.7));
-      this.follower.arousal += (anchor.arousal - this.follower.arousal) * (1 - Math.exp(-dt / 0.7));
+      const ease = 1 - Math.exp(-dt / 0.7);
+      this.follower.valence += (anchor.valence - this.follower.valence) * ease;
+      this.follower.arousal += (anchor.arousal - this.follower.arousal) * ease;
       this.mood = this.follower.update(now, this.features);
     }
 
-    this.render(dt);
+    this.stage.render(this.buildFrame(dt));
     this.adaptQuality(now);
 
     if (now - this.lastHudAt > 200) {
       this.lastHudAt = now;
       this.hud.update(this.state());
     }
-  }
-
-  render(dt) {
-    this.renderer.render(this.buildScene(dt));
   }
 
   /** Everything the HUD and an automated check need to see. */
@@ -325,6 +366,8 @@ export class SmoothCoffee {
     return {
       status: this.status,
       deviceLabel: this.device?.label ?? 'none',
+      visualLabel: this.visual.label,
+      visualId: this.visual.id,
       moodName: this.lockedMood >= 0 ? `${MOOD_ANCHORS[this.lockedMood].name} (locked)` : this.mood.name,
       valence: this.mood.valence,
       arousal: this.mood.arousal,
@@ -336,18 +379,22 @@ export class SmoothCoffee {
       centroidHz: this.features.centroidHz ?? 0,
       rms: this.features.rms ?? 0,
       idle: this.mood.idle,
+      presence: this.room.presence,
+      vantage: this.room.vantage,
+      vantageMix: this.room.vantageMix,
+      swayPhase: this.room.swayPhase,
       fps,
       scale: this.quality.scale,
-      lift: this.scene.lift,
+      lift: this.frame.lift,
       warning: this.warning,
-      colors: this.scene.colors.map((stop) => stop.map((v) => Math.round(v * 1000) / 1000)),
-      backingPixels: this.renderer.backingPixels,
+      colors: this.frame.colors.map((stop) => stop.map((v) => Math.round(v * 1000) / 1000)),
+      backingPixels: this.stage.backingPixels,
     };
   }
 
   scheduleFrame() {
     if (this.rafId) cancelAnimationFrame(this.rafId);
-    this.rafId = document.hidden ? 0 : requestAnimationFrame((now) => this.frame(now));
+    this.rafId = document.hidden ? 0 : requestAnimationFrame((now) => this.tick(now));
   }
 }
 

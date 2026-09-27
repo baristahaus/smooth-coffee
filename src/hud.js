@@ -44,6 +44,7 @@ export class Hud {
     this.set('status', state.status);
     this.set('device', state.deviceLabel);
     this.set('mood', state.moodName);
+    this.set('visual', state.visualLabel);
     this.set('bpm', state.bpm && state.bpmConfidence > 0.3 ? `${Math.round(state.bpm)} BPM` : 'no steady beat');
     this.set('key', state.keyName ?? '—');
     this.set('fps', state.fps.toFixed(0));

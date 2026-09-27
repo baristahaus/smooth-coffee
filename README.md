@@ -1,11 +1,16 @@
 # Smooth Coffee
 
-Full-screen audio-reactive field for macOS. It reads the Mac's **system audio** through a
+Full-screen audio-reactive visual for macOS. It reads the Mac's **system audio** through a
 loopback input device, estimates the **mood** of what is playing (valence × arousal), and paints
-a slow, dim, drifting colour field for an OLED panel. Music keeps playing through your speakers
-or headphones the whole time.
+a slow, dim, drifting picture for an OLED panel. Music keeps playing through your speakers or
+headphones the whole time.
 
-No build step, no dependencies: ES modules, one WebGL1 fragment shader, a Python dev server.
+Two scenes ship: an abstract **mood field**, and a **smoke room** with a trio that sways to the
+beat. Both consume the same per-frame contract, so the mood layer is shared and neither scene
+touches the analysis.
+
+No build step, no dependencies: ES modules, one WebGL1 fragment shader per scene, a Python dev
+server.
 
 ---
 
@@ -29,7 +34,7 @@ Audio MIDI Setup (`open -a "Audio MIDI Setup"`) → bottom-left `+` → **Create
 4. Name it `Visualiser Loop`. Right-click it → **Use This Device For Sound Output**.
 
 That is the whole trick: your speakers and BlackHole receive the same stream, and the browser
-records BlackHole. **System output = Visualiser Loop**, and in the visualiser press `P` and choose
+records BlackHole. **System output = Visualiser Loop**, and in the app press `P` and choose
 **BlackHole 2ch**.
 
 Costs worth knowing before you commit to this:
@@ -37,9 +42,9 @@ Costs worth knowing before you commit to this:
 - macOS will not change the volume of a Multi-Output Device — your volume keys stop working while
   it is the output. Set levels per device in Audio MIDI Setup, or use
   `brew install switchaudio-osx; SwitchAudioSource -s "MacBook Pro Speakers" -t output` when you
-  want control back.
+  want control back. (Bead `smooth-coffee-ai2` removes this limitation.)
 - Everything you capture, you also send: nothing is recorded to disk, but macOS shows the orange
-  microphone indicator while the visualiser runs.
+  microphone indicator while the app runs.
 - Bluetooth is a bad companion for this: the extra hop plus drift correction invites glitches.
   Wired/USB/built-in output is the reliable case.
 
@@ -57,8 +62,7 @@ the real device name). Three things to expect:
 - eqMac refuses to be the *default* input device (`CanBeDefaultDevice = 0` on its input scope), so
   the explicit `deviceId: {exact}` selection this app uses is mandatory, not a nicety.
 
-Free eqMac is enough for this project — the driver and the capture path are not Pro features. The
-Pro list is Expert EQ, Spectrum Analyzer, L/R EQ, AU hosting, Spatial, App Mixer, custom UI.
+Free eqMac is enough for this project — the driver and the capture path are not Pro features.
 
 [eq824]: https://github.com/bitgapp/eqMac/issues/824
 [eq819]: https://github.com/bitgapp/eqMac/issues/819
@@ -79,13 +83,12 @@ SwitchAudioSource -c -t output                            # should print Visuali
 Open it in **Brave** → **Start capturing** → allow the microphone twice (Brave's own prompt, then
 macOS → Settings → Privacy & Security → Microphone → Brave). Click, press `F`, done.
 
-`curl`-style note: `http://localhost` works too, but `http://127.0.0.1` avoids any IPv6 surprise.
-
 ## 3. Controls
 
 | Key | Effect |
 |---|---|
 | `F` | fullscreen |
+| `S` | switch scene (mood field ⇄ smoke room) |
 | `H` | readout on/off |
 | `P` | device picker (switch input without reloading) |
 | `[` `]` | brightness ceiling 0.22 … 0.95, default 0.62 |
@@ -94,7 +97,7 @@ macOS → Settings → Privacy & Security → Microphone → Brave). Click, pres
 | `R` | reset tempo/mood memory |
 
 Mouse or key activity shows the readout for 5 s, then it fades and the cursor hides.
-Lift, render scale and last device persist in `localStorage`.
+Lift, render scale, chosen device and chosen scene persist in `localStorage`.
 
 ## 4. How the mood is derived
 
@@ -105,7 +108,7 @@ Lift, render scale and last device persist in `localStorage`.
 |---|---|---|
 | loudness | RMS → dB → 0..1 over −46…−12 dB | arousal |
 | activity | spectral flux (positive bin deltas), normalised | arousal, pulse |
-| tempo | autocorrelation of a 40 Hz onset envelope over 8 s, plausibility-weighted 66–185 BPM, parabolic peak, hysteresis | arousal |
+| tempo | autocorrelation of a 40 Hz onset envelope over 8 s, plausibility-weighted 66–185 BPM, parabolic peak, hysteresis | arousal, sway rate |
 | mode | Krumhansl–Schmuckler correlation of a 12-bin chroma against rotated major/minor profiles | valence, key name |
 | brightness | spectral centroid over 220…2600 Hz | valence |
 | harshness | energy above 2 kHz (hiss, clipping, inharmonic noise) | valence −, arousal + |
@@ -119,13 +122,51 @@ Mysterious, Tense, Fierce, Ambient. Every frame the palette and motion parameter
 inverse-square blend of *all* of them, so the look slides continuously between anchors instead of
 snapping between ten presets. Each anchor also carries motion (`flow`, `turbulence`, `contrast`,
 `pulseGain`, `glow`, `grain`): calm music is slower and less turbulent by construction, not only
-by colour. That is the seam the later "smoke room with jazz musicians" scene hangs off — it gets
-the same `{colors, motion, bands, pulse, valence, arousal}` contract.
+by colour.
 
-The field itself is domain-warped fBm (`fbm(p + fbm(p + fbm(p)))`), coloured by three stops, with a
-bass-driven glow core, ridge filaments driven by mids and air, high-frequency sparkle, and grain.
+## 5. Scenes and the frame contract
 
-## 5. What protects the OLED
+Every scene is a module exporting `{ id, label, fragment, uniforms(frameState) }`;
+`src/stage.js` compiles and caches the programs and applies the uniform map generically by
+introspecting the linked program, so a typo in a uniform name warns once in the console instead of
+rendering as a silent black rectangle.
+
+The contract handed to `uniforms()` each frame:
+
+```
+{ clock, sceneTime, drift{x,y}, glow{x,y}, breath, lift, idle, grain, contrast,
+  flow, turbulence, pulseGain, glowGain, bands{bass,mid,air}, pulse, colors[3], room }
+```
+
+`room` is the output of `src/choreography.js` — stage business any figurative scene can use:
+`swayPhase` (in beats), `presence` (band present or gone), `flicker`, `camera{x,y,zoom}`,
+`lamp{x,y}`, `haze`, `beam`, `vantage`, `vantageMix`.
+
+### Mood field
+
+Domain-warped fBm (`fbm(p + fbm(p + fbm(p)))`) coloured by three palette stops, with a
+bass-driven glow core, ridge filaments driven by mids and air, sparkle from the high band, and grain.
+
+### Smoke room
+
+A lamp swinging above a haze-filled cone, dust in the shaft, a candle on the front table, and a
+trio of silhouettes — upright bass, sax, pianist at a grand — rendered as signed-distance shapes
+that **absorb** light rather than emit it.
+
+| Input | What it moves |
+|---|---|
+| tempo (or a 5.5 s rest rate without a confident beat) | how fast the three figures sway, each with its own phase |
+| bass + pulse | cone width, glow, the lamp's bloom |
+| arousal + bass | haze density |
+| air | dust motes in the shaft |
+| valence/arousal | palette, contrast, turbulence — same anchors as the field |
+| idle | the band leaves (6.5 s fade), the lamp drops to an ember, the haze thins but keeps moving |
+
+The camera is never still: two Lissajous pans and a long zoom breath, and every 11 minutes the room
+*fades to a different vantage* (five framings, 14 s cross-fade), so an hour of this scene is a
+series of different pictures rather than one held shot.
+
+## 6. What protects the OLED
 
 Burn-in comes from static *contrast*, so all of these are in place at once:
 
@@ -133,61 +174,81 @@ Burn-in comes from static *contrast*, so all of these are in place at once:
 |---|---|
 | whole-field pan, 97 s × 143 s Lissajous, ±4.5 % of height | `DRIFT` + `uDrift` |
 | glow source wanders on 211 s / 167 s periods, vignette follows it | `uGlow` |
-| brightness ceiling with soft roll-off — default `lift` 0.62, nothing sits at panel maximum | shader tone map |
+| swinging lamp, so the brightest object is always over new pixels | `choreography.lamp` |
+| never-still camera plus a vantage change every 11 minutes | `choreography.camera` |
+| brightness ceiling with soft roll-off — default `lift` 0.62 | shader tone map |
 | 4.5 % "breathing" of the ceiling on a 71 s cycle | `uBreath` |
-| hue wear-levelling: 6–13 % channel rotation on a ~5.5 min cycle, so a repeated palette does not age the same subpixels | shader `mix(color, color.brg, …)` |
-| readout: hidden by default, 5 s fade, dim (`--ink` 62 % alpha), cycles corners every 45 s | `hud.js` |
+| hue wear-levelling: 6–13 % channel rotation on a ~5.5 min cycle | shader `mix(color, color.brg, …)` |
+| readout: hidden by default, 5 s fade, dim, cycles corners every 45 s | `hud.js` |
 | start gate text drifts slowly while it is up, and disappears on first capture | `styles.css` |
-| no signal for 8 s → 2.5 s fade to a dim, slow, still-moving idle field (never a frozen frame) | `MoodFollower.idle` |
+| no signal for 8 s → 2.5 s fade to a dim, slow, still-moving idle field | `MoodFollower.idle` + `choreography.presence` |
 | per-pixel dither so large dark gradients do not band into static contours | `uGrain` |
 | adaptive render scale (1 → 45 %) keeps frame time sane on a 4 K panel | `adaptQuality` |
 
-Measured on real frames (Chromium, software GL, 1440×757, lift 0.62): luma average 86/255,
-99th percentile 119/255, max 124/255. Two frames 20 s apart differ in 98.5 % of pixels (96 % in the
-centre 300×200 region) — no pixel is holding a value.
+Measured on real frames in Chromium (software GL, 1440×757, lift 0.62):
+
+| | mood field | smoke room |
+|---|---|---|
+| luma average / p99 / max (of 255) | 84.7 / 117.5 / 122 | 33.2 / 98.5 / 128 |
+| frames 20 s apart, identical pixels | 1.55 % | 16.3 % |
+| identical pixels in the static-geometry band | — | 7.2 % |
+| mean luma of the identical pixels | — | 23 / 255 |
+| identical **and** brighter than 40/255 | — | 294 px = 0.053 % of the panel |
+
+The room looks worse on the second line and better on the last two: the pixels that hold still are
+the dark corners and the silhouettes — which on an OLED are the pixels drawing no current at all.
+The bright shaft moved 92 px between the two sampled frames.
 
 If you drive a bright OLED TV, start with `[` to pull the ceiling toward 0.45 and leave the readout
 off with `H`.
 
-## 6. Layout
+## 7. Layout
 
 ```
-index.html      canvas + start gate + readout + device picker
-styles.css      dark UI, readout auto-hide and corner cycling
-devserver.py    localhost server, Cache-Control: no-store so reload = the code you just wrote
-run.sh          ./run.sh [port]
-src/capture.js  permission unlock, device choice, getUserMedia constraints, source→analyser
-src/features.js flux, bands, centroid, chroma/key, tempo, pulse          (DOM-free)
-src/mood.js     features → valence/arousal with memory                   (DOM-free)
-src/palettes.js ten circumplex anchors + continuous blend                 (DOM-free)
-src/renderer.js WebGL1 field, render-scale management
-src/hud.js      readout text/bars, auto-hide, corner cycling
-src/main.js     glue: loop, scene assembly, keys, adaptive quality, persistence
-tests/mood.test.mjs  node --test over synthesised analyser frames
+index.html           canvas + start gate + readout + device picker
+styles.css           dark UI, readout auto-hide and corner cycling
+devserver.py         localhost server, Cache-Control: no-store so reload = the code you just wrote
+run.sh               ./run.sh [port]
+src/capture.js       permission unlock, device choice, getUserMedia constraints, source→analyser
+src/features.js      flux, bands, centroid, chroma/key, tempo, pulse          (DOM-free)
+src/mood.js          features → valence/arousal with memory                   (DOM-free)
+src/palettes.js      ten circumplex anchors + continuous blend                 (DOM-free)
+src/choreography.js  sway, presence, flicker, camera and vantage schedule      (DOM-free)
+src/stage.js         WebGL harness: program cache, uniform introspection, scale
+src/scenes/field.js  the abstract field
+src/scenes/smokeRoom.js  the room
+src/hud.js           readout text/bars, auto-hide, corner cycling
+src/main.js          glue: loop, frame-state assembly, keys, adaptive quality, persistence
+tests/               node --test over synthesised analyser frames and a synthetic clock
 ```
 
-`features.js`, `mood.js` and `palettes.js` deliberately touch no DOM: the whole mood path is
-testable with typed arrays, so it can be reasoned about without audio hardware.
+`features.js`, `mood.js`, `palettes.js` and `choreography.js` touch no DOM: the whole path from
+audio to staging is testable with typed arrays and a fake clock, so it can be reasoned about
+without audio hardware or a browser.
 
 ```bash
-node --test tests/     # 8 tests: major/minor split, valence/arousal ordering, 120/90/150 BPM,
-                       # jittered frame clock, silence→idle, extremes stay finite, reset
+node --test tests/     # 15 tests: major/minor split, valence/arousal ordering, 120/90/150 BPM,
+                       # jittered frame clock, silence→idle, extremes, reset, sway-in-beats,
+                       # vantage schedule, presence fade, "nothing in the room holds still"
 ```
 
-## 7. Limits and next steps
+## 8. Limits and next steps
 
-- **Mood is heuristic, not learned.** One chord, one drum fill or a very dense mix can move the
-  needle for a few seconds; the smoothing limits the damage but does not remove it. Audition
-  palettes with `1`–`9` and decide what you actually want before blaming the analysis.
-- **`getUserMedia` is mono-aware but stereo-honest**: Chrome reports 2 channels; there is no
-  cross-channel analysis yet, so a hard-panned mix reads as one blob.
+- **Mood is heuristic, not learned.** One chord, one drum fill or a dense mix can move the needle
+  for a few seconds; the smoothing limits the damage but does not remove it. Audition palettes with
+  `1`–`9` and decide what you actually want before blaming the analysis.
+- **The trio is silhouette-stagecraft, not anatomy.** Three distance-field figures chosen for
+  readable outlines (tall diagonal bass, bent horn, piano lid). A polish pass on proportions and
+  staging is tracked in beads.
+- **Frame rates here are software-rendered.** 24–37 fps under SwiftShader at 1440×757 says nothing
+  about an Apple GPU; the adaptive-scale path is exercised, the steady 60 fps path is not.
+- **No cross-channel analysis**: Chrome reports 2 channels and nothing uses the difference yet, so
+  a hard-panned mix reads as one blob (bead `smooth-coffee-6a4`).
 - **Not tested on Safari or Firefox.** Both support the APIs used here; Safari has had
   `deviceId: {exact}` regressions in `applyConstraints` (WebKit bug 230819), which is why the device
   is chosen at `getUserMedia` time and switched by reopening the stream rather than by constraint.
 - **Per-process capture is the better long-term source.** macOS 14.2+ Core Audio taps
-  (`CATapDescription`, `AudioHardwareCreateProcessTap`, `AudioHardwareTap` on macOS 15+) can tap the
-  global mixdown or a single app without hijacking your output device, behind *Screen & System
-  Audio Recording*. A ~200-line helper streaming Float32 PCM over WebSocket would remove the
-  Multi-Output Device and its dead volume keys. Tracked in beads.
-- The **smoke room with jazz musicians** belongs as a second renderer behind the same scene
-  contract; the mood layer should not change.
+  (`CATapDescription`, `AudioHardwareCreateProcessTap`) capture the global mixdown or one process
+  behind *Screen & System Audio Recording*, with no virtual driver and no dead volume keys — but as
+  a helper feeding PCM over a WebSocket, not as a browser-visible input device. Bead
+  `smooth-coffee-ai2` carries the design, the API surface and the one experiment still needed.
