@@ -14,3 +14,7 @@ CLAUDE.md
 .codex/
 .cursor/
 .agents/
+
+# SwiftPM build products from tools/tap-probe
+tools/tap-probe/.build/
+tools/tap-probe/build/
