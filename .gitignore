@@ -8,3 +8,9 @@ node_modules/
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+AGENTS.md
+CLAUDE.md
+.claude/
+.codex/
+.cursor/
+.agents/
